@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "ssh-bridge": {
+      "command": "node",
+      "args": [
+        "./scripts/ssh-bridge-linux-server.js"
+      ],
+      "cwd": ".",
+      "env": {
+        "SSH_BRIDGE_LINUX_HOSTS_FILE": "./hosts.json",
+        "SSH_BRIDGE_LINUX_STRICT_HOST_KEY_CHECKING": "accept-new",
+        "SSH_BRIDGE_LINUX_DEFAULT_IDENTITY_FILE": "~/.ssh/id_ed25519",
+        "SSH_BRIDGE_LINUX_PYTHON": "python3",
+        "SSH_BRIDGE_LINUX_SHOW_ON_OPEN": "false",
+        "SSH_BRIDGE_LINUX_MAX_BUFFER_BYTES": "200000"
+      }
+    }
+  }
+}
