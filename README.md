@@ -144,6 +144,12 @@ SSH_BRIDGE_LINUX_MIRROR_COMMAND='xterm -T {quotedTitle} -e bash -lc "tail -n +1 
 
 这版非常接近真实终端，能力强，也更容易误操作。对生产机器执行写入、删除、部署、权限修改前，需要先确认目标主机和命令含义。文件写入工具默认要求先看 diff，并建议保留备份。
 
+### 版权与许可证
+
+Copyright 2026 Liuwm0312
+
+本项目基于 Apache License 2.0 开源。详见 [LICENSE](LICENSE)。
+
 ## English
 
 ### What This Is For
@@ -196,3 +202,9 @@ If `tmux` is used, attach with the command returned by the tool.
 ### Notes
 
 This is intentionally close to a real terminal. Prefer short, observable actions, read the screen after each important input, and use the safer file tools for remote edits.
+
+### Copyright And License
+
+Copyright 2026 Liuwm0312
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
