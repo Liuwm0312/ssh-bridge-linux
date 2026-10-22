@@ -198,6 +198,20 @@ If `tmux` is used, attach with the command returned by the tool.
 - `SSH_BRIDGE_LINUX_SHOW_ON_OPEN`
 - `SSH_BRIDGE_LINUX_MAX_BUFFER_BYTES`
 - `SSH_BRIDGE_LINUX_MIRROR_COMMAND`
+- `SSH_BRIDGE_LINUX_STDIO_FRAMING` — pins the stdio reply framing to `newline`, `header`, or `auto` (default)
+
+### Stdio Framing
+
+The server accepts both MCP stdio framings on stdin and answers each request in the
+framing it arrived in:
+
+- newline-delimited JSON — what the official MCP SDK client (`mcp.client.stdio`) uses
+- `Content-Length: N` header followed by N bytes of JSON — the LSP-style framing this
+  server originally spoke
+
+Clients that require one deterministic reply format can set
+`SSH_BRIDGE_LINUX_STDIO_FRAMING` to `newline` or `header`; the default `auto` mirrors
+the request framing per message.
 
 ### Notes
 

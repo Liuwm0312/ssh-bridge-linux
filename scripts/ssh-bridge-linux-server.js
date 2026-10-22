@@ -1934,30 +1934,76 @@ async function callTool(name, args = {}) {
   }
 }
 
-function sendMessage(message) {
+// MCP stdio framing compatibility — mirrors the patch applied to the general
+// ssh-bridge server in this deployment. The upstream server speaks LSP-style
+// framing only (`Content-Length: N` header terminated by CRLFCRLF, then N
+// bytes of body), but the official MCP Python SDK client (`mcp.client.stdio`)
+// writes and reads newline-delimited JSON. Against this server the official
+// client gets zero bytes back and the handshake times out.
+//
+// Both framings are accepted on stdin; the reply framing mirrors the framing
+// of the request that produced it. `SSH_BRIDGE_LINUX_STDIO_FRAMING` pins the
+// reply format: "newline" | "header" | "auto" (default).
+let replyFraming = (process.env.SSH_BRIDGE_LINUX_STDIO_FRAMING || "auto").toLowerCase();
+if (replyFraming !== "newline" && replyFraming !== "header") {
+  replyFraming = "auto";
+}
+
+// The framing the request currently being handled arrived in.
+let currentFraming = "header";
+
+function resolveReplyFraming(requestFraming) {
+  if (replyFraming === "newline" || replyFraming === "header") {
+    return replyFraming;
+  }
+  return requestFraming === "newline" ? "newline" : "header";
+}
+
+function sendMessage(message, framing) {
   const body = JSON.stringify(message);
+  const mode = resolveReplyFraming(framing || currentFraming);
+  if (mode === "newline") {
+    process.stdout.write(`${body}\n`);
+    return;
+  }
   process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
 }
 
 let inputBuffer = Buffer.alloc(0);
 process.stdin.on("data", (data) => {
   inputBuffer = Buffer.concat([inputBuffer, data]);
-  while (true) {
-    const separator = inputBuffer.indexOf("\r\n\r\n");
-    if (separator === -1) return;
-    const headerText = inputBuffer.slice(0, separator).toString("utf8");
-    const match = headerText.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      inputBuffer = inputBuffer.slice(separator + 4);
+  for (;;) {
+    const head = inputBuffer.slice(0, 64).toString("utf8");
+    const looksHeaderFramed = /^\s*Content-Length\s*:/i.test(head);
+
+    if (looksHeaderFramed) {
+      const separator = inputBuffer.indexOf("\r\n\r\n");
+      if (separator === -1) return;
+      const headerText = inputBuffer.slice(0, separator).toString("utf8");
+      const match = headerText.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
+        inputBuffer = inputBuffer.slice(separator + 4);
+        continue;
+      }
+      const length = Number.parseInt(match[1], 10);
+      const bodyStart = separator + 4;
+      const bodyEnd = bodyStart + length;
+      if (inputBuffer.length < bodyEnd) return;
+      const body = inputBuffer.slice(bodyStart, bodyEnd).toString("utf8");
+      inputBuffer = inputBuffer.slice(bodyEnd);
+      currentFraming = "header";
+      handleMessage(JSON.parse(body));
       continue;
     }
-    const length = Number.parseInt(match[1], 10);
-    const bodyStart = separator + 4;
-    const bodyEnd = bodyStart + length;
-    if (inputBuffer.length < bodyEnd) return;
-    const body = inputBuffer.slice(bodyStart, bodyEnd).toString("utf8");
-    inputBuffer = inputBuffer.slice(bodyEnd);
-    handleMessage(JSON.parse(body));
+
+    // Newline framing: one JSON object per line.
+    const newlineIndex = inputBuffer.indexOf("\n");
+    if (newlineIndex === -1) return;
+    const line = inputBuffer.slice(0, newlineIndex).toString("utf8").trim();
+    inputBuffer = inputBuffer.slice(newlineIndex + 1);
+    if (!line) continue;
+    currentFraming = "newline";
+    handleMessage(JSON.parse(line));
   }
 });
 
