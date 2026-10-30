@@ -4,8 +4,9 @@ const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.8.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.8.1" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 const LINUX_TERMINAL_CANDIDATES = [
@@ -53,7 +54,10 @@ const toolDefinitions = [
       type: "object",
       properties: {
         session: { type: "string", description: "Session name." },
-        input: { type: "string", description: "Text to write. Include \\n for Enter." }
+        input: { type: "string", description: "Text to write. Include \\n for Enter." },
+        sensitive: { type: "boolean", description: "Suppress input recording and redact literal echoes. Always enable for secrets.", default: false },
+        mirror: { type: "boolean", description: "Explicitly mirror non-sensitive raw input.", default: false },
+        recordInput: { type: "boolean", description: "Explicitly include non-sensitive raw input in replay.", default: false }
       },
       required: ["session", "input"]
     }
@@ -122,6 +126,9 @@ const toolDefinitions = [
       properties: {
         session: { type: "string", description: "Session name." },
         input: { type: "string", description: "Text to send. Include \\n for Enter." },
+        sensitive: { type: "boolean", description: "Suppress input recording and redact literal echoes. Always enable for secrets.", default: false },
+        mirror: { type: "boolean", description: "Explicitly mirror non-sensitive raw input.", default: false },
+        recordInput: { type: "boolean", description: "Explicitly include non-sensitive raw input in replay.", default: false },
         waitForText: { type: "string", description: "Optional text to wait for after sending input." },
         timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 }
       },
@@ -136,6 +143,7 @@ const toolDefinitions = [
       properties: {
         session: { type: "string", description: "Session name." },
         command: { type: "string", description: "Shell command to run." },
+        sensitive: { type: "boolean", description: "Suppress command recording and redact literal echoes. Prefer raw sensitive input for passwords.", default: false },
         waitForText: { type: "string", description: "Optional text to wait for after running the command." },
         timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 }
       },
@@ -349,7 +357,7 @@ function getMirrorDir() {
 }
 
 function ensureDir(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
+  fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
 }
 
 function safeFilePart(value) {
@@ -590,7 +598,50 @@ function maxBufferBytes() {
   return Number.isFinite(value) && value > 10000 ? value : 200000;
 }
 
-function appendChunk(session, stream, text) {
+function redactOutput(session, stream, text, flush = false) {
+  const privacy = session.privacy;
+  if (!privacy) return text;
+  const value = (privacy.pending[stream] || "") + text;
+  privacy.pending[stream] = "";
+  let result = "";
+  for (let index = 0; index < value.length;) {
+    const remaining = value.slice(index);
+    // Hold a possible secret prefix until the next chunk, including overlaps.
+    if (privacy.secrets.some((secret) => secret.length > remaining.length && secret.startsWith(remaining))) {
+      if (flush) result += "[REDACTED]";
+      else privacy.pending[stream] = remaining;
+      break;
+    }
+    const match = privacy.secrets.find((secret) => value.startsWith(secret, index));
+    if (match) {
+      result += "[REDACTED]";
+      index += match.length;
+    } else {
+      result += value[index++];
+    }
+  }
+  return result;
+}
+
+function isSensitiveInput(session, args) {
+  const screen = session.screen;
+  const prompt = screen.lines.slice(0, screen.cursorRow + 1)
+    .map((line, index) => line.slice(0, index === screen.cursorRow ? screen.cursorCol : undefined).join(""))
+    .join("\n").slice(-1024);
+  return args.sensitive === true || /(?:password|passphrase|\u5bc6\u7801|\u53e3\u4ee4)[^:\uff1a]*[:\uff1a]\s*$/i.test(prompt);
+}
+
+function protectInput(session, input) {
+  session.privacy ||= { secrets: [], pending: {} };
+  for (const value of input.split(/[\r\n]+/).filter(Boolean)) {
+    if (!session.privacy.secrets.includes(value)) session.privacy.secrets.push(value);
+  }
+  session.privacy.secrets.sort((a, b) => b.length - a.length);
+}
+
+function appendChunk(session, stream, text, flush = false) {
+  if (stream === "stdout" || stream === "stderr") text = redactOutput(session, stream, text, flush);
+  if (!text) return;
   const chunk = {
     seq: ++session.seq,
     at: new Date().toISOString(),
@@ -617,9 +668,12 @@ function shouldShowOnOpen(args) {
 }
 
 function createMirror(session) {
+  ensureDir(getStateRoot());
+  fs.chmodSync(getStateRoot(), 0o700);
   ensureDir(getMirrorDir());
+  fs.chmodSync(getMirrorDir(), 0o700);
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  const filePath = path.join(getMirrorDir(), `${safeFilePart(session.name)}-${stamp}.log`);
+  const filePath = path.join(getMirrorDir(), `${safeFilePart(session.name)}-${stamp}-${randomUUID()}.log`);
   const title = `SSH Bridge ${session.name}`;
   fs.writeFileSync(filePath, [
     `SSH Bridge mirror: ${session.name}`,
@@ -628,7 +682,7 @@ function createMirror(session) {
     "",
     "This is a read-only mirror of Codex's PTY session. Type in Codex tools, not this window.",
     ""
-  ].join("\n"), "utf8");
+  ].join("\n"), { encoding: "utf8", mode: 0o600, flag: "wx" });
   session.mirror = {
     enabled: false,
     filePath,
@@ -1450,14 +1504,21 @@ function openTerminal(args) {
   createMirror(session);
   sessions.set(name, session);
 
-  child.stdout.on("data", (data) => appendChunk(session, "stdout", data.toString("utf8")));
-  child.stderr.on("data", (data) => appendChunk(session, "stderr", data.toString("utf8")));
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (data) => appendChunk(session, "stdout", data));
+  child.stderr.on("data", (data) => appendChunk(session, "stderr", data));
   child.on("exit", (code, signal) => {
     session.closed = true;
     session.exitCode = code;
     session.signal = signal || "";
     session.closedAt = new Date().toISOString();
-    appendChunk(session, "status", `\n[ssh-bridge-linux session exited code=${code} signal=${signal || ""}]\n`);
+  });
+  child.on("close", () => {
+    appendChunk(session, "stdout", "", true);
+    appendChunk(session, "stderr", "", true);
+    session.privacy = null;
+    appendChunk(session, "status", `\n[ssh-bridge-linux session exited code=${session.exitCode} signal=${session.signal || ""}]\n`);
   });
 
   const mirror = shouldShowOnOpen(args) ? openTerminalMirror(session) : {
@@ -1475,10 +1536,13 @@ function sendInput(args) {
     throw new Error(`Session "${session.name}" is closed.`);
   }
   const input = String(args.input ?? "");
-  if (args.mirror !== false) {
+  const sensitive = isSensitiveInput(session, args) ||
+    Boolean(session.privacy?.secrets.some((secret) => input.includes(secret)));
+  if (sensitive) protectInput(session, input);
+  if (!sensitive && args.mirror === true) {
     appendMirrorInput(session, input, "input");
   }
-  if (args.recordInput !== false) {
+  if (!sensitive && args.recordInput === true) {
     recordInputEvent(session, input, "input");
   }
   session.child.stdin.write(input);
@@ -1609,7 +1673,8 @@ async function expectText(args) {
 }
 
 async function typeAndWait(args) {
-  sendInput({ session: args.session, input: String(args.input ?? "") });
+  sendInput({ session: args.session, input: String(args.input ?? ""), sensitive: args.sensitive,
+    mirror: args.mirror, recordInput: args.recordInput });
   if (args.waitForText) {
     await waitForText({
       session: args.session,
@@ -1635,6 +1700,9 @@ async function runVisible(args) {
   return typeAndWait({
     session: args.session,
     input: `${command}\n`,
+    sensitive: args.sensitive,
+    mirror: true,
+    recordInput: true,
     waitForText: args.waitForText,
     timeoutMs: args.timeoutMs
   });

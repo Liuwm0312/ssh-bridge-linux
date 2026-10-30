@@ -39,6 +39,8 @@ Use this skill for the Linux-only interactive PTY version of SSH Bridge.
 - Prefer `ssh_linux_terminal_state` when the screen may be a pager, editor, monitor, REPL, or interactive prompt.
 - Do not enable local Linux terminal mirroring unless the user asks; the default is headless PTY operation.
 - For shell commands, prefer `ssh_linux_run_visible` over raw `ssh_linux_send` so command text is captured cleanly in mirrors.
+- For passwords, passphrases, tokens, or other secrets, use `ssh_linux_send` or `ssh_linux_type_and_wait` with `sensitive: true`. Never use visible commands to pass credentials on a command line.
+- Raw input is not mirrored or included in replay by default. Only opt into `mirror: true` or `recordInput: true` for known non-sensitive input. Password-prompt detection is a fallback, not a substitute for the explicit sensitive flag.
 - Prefer `ssh_linux_key` over raw control characters when a named key exists.
 - For full-screen programs, use raw keystrokes deliberately:
   - `q` to quit many pagers and monitors.
@@ -55,6 +57,7 @@ Use this skill for the Linux-only interactive PTY version of SSH Bridge.
 - Linux mirroring may open a graphical terminal, create a `tmux` session, or use `SSH_BRIDGE_LINUX_MIRROR_COMMAND`.
 - If the mirror backend is `tmux`, tell the user the returned `tmux attach -t ...` command when they need to watch.
 - The mirror is read-only from the user's perspective. Codex still controls the real PTY through the MCP tools.
+- Sensitive input is omitted from input events and literal echoes are redacted before buffering, screen rendering, mirroring, and export. Remote output can still contain unrelated secrets; inspect transcripts before sharing.
 
 ## Safety
 

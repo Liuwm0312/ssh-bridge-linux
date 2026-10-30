@@ -2,3 +2,11 @@ node_modules/
 .DS_Store
 state/
 hosts.json
+hosts.json.*
+hosts.local*.json
+.env
+.env.*
+*.log
+*.bak
+*.bundle
+__pycache__/

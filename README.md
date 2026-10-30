@@ -144,6 +144,12 @@ SSH_BRIDGE_LINUX_MIRROR_COMMAND='xterm -T {quotedTitle} -e bash -lc "tail -n +1 
 
 这版非常接近真实终端，能力强，也更容易误操作。对生产机器执行写入、删除、部署、权限修改前，需要先确认目标主机和命令含义。文件写入工具默认要求先看 diff，并建议保留备份。
 
+从 0.8.1 起，`ssh_linux_send` 和 `ssh_linux_type_and_wait` 默认不把原始输入写入镜像或 replay。输入密码、口令或 token 时，必须显式传入 `sensitive: true`；识别到常见密码提示时也会自动保护输入。敏感输入优先于 `mirror` / `recordInput` 的开启设置。普通非敏感命令继续使用 `ssh_linux_run_visible`，保留可见命令记录。
+
+已标记敏感输入的字面回显（包括跨输出块的回显）会在进入缓冲区、屏幕、镜像和导出前替换成 `[REDACTED]`。这不是通用 DLP：无法保证遮盖远端独立输出、编码或变换后的秘密；工具调用本身也可能被调用端记录。优先使用 SSH key，不要在 shell 命令行传递密码。旧版本已生成的日志不会被自动清理，分享前需单独检查。
+
+`state/`、镜像目录权限为 `0700`，新镜像文件权限为 `0600`。真实 `hosts.json`、环境变量文件和运行记录只应保存在本机，不要提交。参见 [SECURITY.md](SECURITY.md)。
+
 ### 版权与许可证
 
 Copyright 2026 Liuwm0312
@@ -151,6 +157,16 @@ Copyright 2026 Liuwm0312
 本项目基于 Apache License 2.0 开源。详见 [LICENSE](LICENSE)。
 
 ## English
+
+### Input Privacy (0.8.1)
+
+Raw input is no longer mirrored or included in replay by default. Set `sensitive: true` on `ssh_linux_send` or `ssh_linux_type_and_wait` for passwords, passphrases, and tokens. Common password prompts also trigger protection, even if input logging was explicitly enabled. Normal non-sensitive `ssh_linux_run_visible` commands retain visible input logging.
+
+Sensitive literal echoes are redacted before output is buffered, rendered, mirrored, or exported, including chunk-split echoes. This is not general-purpose secret detection: unrelated or transformed remote output and caller-side tool logs are outside its scope. Existing transcripts are not retroactively cleaned. Use SSH keys where possible and review exports before sharing. New mirror files use `0600` permissions inside `0700` state/mirror directories.
+
+### Tests
+
+Run `node --test tests/*.test.cjs`. Tests use temporary configuration and synthetic credentials; they do not connect to your hosts or modify an installed plugin.
 
 ### What This Is For
 
